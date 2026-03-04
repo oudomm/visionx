@@ -24,10 +24,6 @@ export default function VisionApp() {
   const [confidence, setConfidence] = useState(0)
   const [isReady, setIsReady] = useState(false)
 
-  useEffect(() => {
-    startCamera()
-  }, [])
-
   async function startCamera() {
     const stream = await navigator.mediaDevices.getUserMedia({
       video: { facingMode: 'environment' }
@@ -124,6 +120,10 @@ export default function VisionApp() {
 
     requestAnimationFrame(() => detectLoop(model))
   }
+
+  useEffect(() => {
+    startCamera()
+  }, [])
 
   return (
     <div className="relative flex flex-col items-center justify-center min-h-dvh bg-black overflow-hidden overscroll-none">
