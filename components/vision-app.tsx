@@ -51,6 +51,7 @@ export default function VisionApp() {
     lastSpokenRef.current = text
 
     const utterance = new SpeechSynthesisUtterance(text)
+    utterance.lang = 'km-KH'
     utterance.rate = 0.9
     utterance.pitch = 0.8
     window.speechSynthesis.cancel()
