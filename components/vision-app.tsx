@@ -6,23 +6,26 @@ import '@tensorflow/tfjs'
 import { khmerLabels } from '@/constants/khmer-labels'
 
 const UI_TEXT = {
-  initializing: 'កំពុងចាប់ផ្តើម...',
+  initializing: 'កំពុងដំណើរការ...',
   scanning: 'កំពុងស្កេន...',
   systemOnline: 'ប្រព័ន្ធអនឡាញ',
-  loadingModel: 'កំពុងផ្ទុកម៉ូដែល...',
-  targetIdentified: 'គោលដៅត្រូវបានកំណត់',
-  confidence: 'ភាពជឿជាក់',
-  nothingDetected: 'រកមិនឃើញ...',
-  version: 'v1.0 // ការរកឃើញវត្ថុ',
+  loadingModel: 'កំពុងទាញយកទិន្នន័យ...',
+  targetIdentified: 'សម្គាល់ឃើញ',
+  nothingDetected: 'មិនមានវត្តមាន',
+  confidence: 'កម្រិតច្បាស់លាស់',
+  version: 'v1.0',
+  subtitle: 'ការសម្គាល់វត្ថុ',
 }
 
 export default function VisionApp() {
   const videoRef = useRef<HTMLVideoElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const lastSpokenRef = useRef<string>('')
+  const speechUnlockedRef = useRef(false)
   const [label, setLabel] = useState(UI_TEXT.initializing)
   const [confidence, setConfidence] = useState(0)
   const [isReady, setIsReady] = useState(false)
+  const [isDetecting, setIsDetecting] = useState(false)
 
   async function startCamera() {
     const stream = await navigator.mediaDevices.getUserMedia({
@@ -41,15 +44,26 @@ export default function VisionApp() {
     detectLoop(model)
   }
 
+  function unlockSpeech() {
+    if (speechUnlockedRef.current) return
+    speechUnlockedRef.current = true
+    const silent = new SpeechSynthesisUtterance('')
+    silent.volume = 0
+    window.speechSynthesis.speak(silent)
+  }
+
   function speak(text: string) {
-    // Only speak if it's a different object than last time
     if (text === lastSpokenRef.current) return
     lastSpokenRef.current = text
 
+    const voices = window.speechSynthesis.getVoices()
+    const khmerVoice = voices.find(v => v.lang === 'km-KH' || v.lang.startsWith('km'))
+
     const utterance = new SpeechSynthesisUtterance(text)
+    if (khmerVoice) utterance.voice = khmerVoice
     utterance.lang = 'km-KH'
     utterance.rate = 0.9
-    utterance.pitch = 0.8
+    utterance.pitch = 1.0
     window.speechSynthesis.cancel()
     window.speechSynthesis.speak(utterance)
   }
@@ -62,58 +76,87 @@ export default function VisionApp() {
     const ctx = canvas.getContext('2d')
     if (!ctx) return
 
-    canvas.width = video.videoWidth
-    canvas.height = video.videoHeight
+    // Match canvas internal resolution to its CSS display size
+    const displayW = canvas.clientWidth
+    const displayH = canvas.clientHeight
+    canvas.width = displayW
+    canvas.height = displayH
+
+    // Compute object-cover scale & offset to align boxes with the displayed video
+    const scale = Math.max(displayW / video.videoWidth, displayH / video.videoHeight)
+    const offsetX = (displayW - video.videoWidth * scale) / 2
+    const offsetY = (displayH - video.videoHeight * scale) / 2
 
     const predictions = await model.detect(video)
-
-    ctx.clearRect(0, 0, canvas.width, canvas.height)
+    ctx.clearRect(0, 0, displayW, displayH)
 
     if (predictions.length > 0) {
+      setIsDetecting(true)
       const best = predictions.reduce((a, b) => a.score > b.score ? a : b)
 
       predictions.forEach(pred => {
-        const [x, y, w, h] = pred.bbox
+        const [bx, by, bw, bh] = pred.bbox
+        const x = bx * scale + offsetX
+        const y = by * scale + offsetY
+        const w = bw * scale
+        const h = bh * scale
         const isTop = pred === best
+        const color = isTop ? '#22d3ee' : 'rgba(255,255,255,0.5)'
 
-        ctx.shadowColor = isTop ? '#00ff88' : '#0088ff'
-        ctx.shadowBlur = 12
-        ctx.strokeStyle = isTop ? '#00ff88' : '#0088ff'
+        // glow box
+        ctx.shadowColor = color
+        ctx.shadowBlur = isTop ? 14 : 5
+        ctx.strokeStyle = color
         ctx.lineWidth = isTop ? 2.5 : 1.5
         ctx.strokeRect(x, y, w, h)
+        ctx.shadowBlur = 0
 
+        // corner accents
+        ctx.strokeStyle = color
         ctx.lineWidth = 3
         ctx.beginPath()
-        ctx.moveTo(x, y + 15)
-        ctx.lineTo(x, y)
-        ctx.lineTo(x + 15, y)
+        ctx.moveTo(x, y + 16); ctx.lineTo(x, y); ctx.lineTo(x + 16, y)
         ctx.stroke()
-
         ctx.beginPath()
-        ctx.moveTo(x + w - 15, y + h)
-        ctx.lineTo(x + w, y + h)
-        ctx.lineTo(x + w, y + h - 15)
+        ctx.moveTo(x + w - 16, y + h); ctx.lineTo(x + w, y + h); ctx.lineTo(x + w, y + h - 16)
         ctx.stroke()
 
-        ctx.shadowBlur = 0
-        ctx.fillStyle = isTop ? 'rgba(0,255,136,0.15)' : 'rgba(0,136,255,0.15)'
-        ctx.fillRect(x, y - 24, w, 24)
+        // pill label
+        const khmerText = khmerLabels[pred.class] || pred.class
+        const labelText = `${khmerText}  ${(pred.score * 100).toFixed(0)}%`
+        ctx.font = `bold ${isTop ? 14 : 12}px 'Noto Sans Khmer', sans-serif`
+        const tw = ctx.measureText(labelText).width
+        const px = x
+        const py = y > 30 ? y - 26 : y + h + 4
+        const pw = tw + 14
+        const ph = 22
+        const r = 5
 
-        ctx.fillStyle = isTop ? '#00ff88' : '#0088ff'
-        ctx.font = 'bold 13px monospace'
-        ctx.fillText(
-          `${khmerLabels[pred.class] || pred.class.toUpperCase()}  ${(pred.score * 100).toFixed(0)}%`,
-          x + 6,
-          y - 7
-        )
+        ctx.fillStyle = color
+        ctx.beginPath()
+        ctx.moveTo(px + r, py)
+        ctx.lineTo(px + pw - r, py)
+        ctx.quadraticCurveTo(px + pw, py, px + pw, py + r)
+        ctx.lineTo(px + pw, py + ph - r)
+        ctx.quadraticCurveTo(px + pw, py + ph, px + pw - r, py + ph)
+        ctx.lineTo(px + r, py + ph)
+        ctx.quadraticCurveTo(px, py + ph, px, py + ph - r)
+        ctx.lineTo(px, py + r)
+        ctx.quadraticCurveTo(px, py, px + r, py)
+        ctx.closePath()
+        ctx.fill()
+
+        ctx.fillStyle = '#fff'
+        ctx.fillText(labelText, px + 7, py + 15)
       })
 
-      const khmer = khmerLabels[best.class] || best.class.toUpperCase()
+      const khmer = khmerLabels[best.class] || best.class
       setLabel(khmer)
       setConfidence(Math.round(best.score * 100))
       speak(khmerLabels[best.class] || best.class)
 
     } else {
+      setIsDetecting(false)
       setLabel(UI_TEXT.scanning)
       setConfidence(0)
     }
@@ -126,71 +169,99 @@ export default function VisionApp() {
   }, [])
 
   return (
-    <div className="relative flex flex-col items-center justify-center min-h-dvh bg-black overflow-hidden overscroll-none">
+    <div className="relative min-h-dvh overflow-hidden overscroll-none bg-black" onClick={unlockSpeech}>
 
-      <div className="absolute inset-0 opacity-10"
-        style={{
-          backgroundImage: `linear-gradient(#00ff88 1px, transparent 1px), linear-gradient(90deg, #00ff88 1px, transparent 1px)`,
-          backgroundSize: '40px 40px'
-        }}
+      {/* Camera — true full screen */}
+      <video
+        ref={videoRef}
+        autoPlay
+        playsInline
+        muted
+        className="absolute inset-0 w-full h-full object-cover"
+      />
+      <canvas
+        ref={canvasRef}
+        className="absolute inset-0 w-full h-full"
       />
 
-      <div className="absolute top-0 left-0 right-0 flex justify-between items-center px-6 py-4 z-10" style={{ paddingTop: 'max(1rem, env(safe-area-inset-top))' }}>
-        <div>
-          <p className="text-green-400 font-mono text-xs tracking-widest">VISIONX</p>
-          <p className="text-green-900 font-mono text-xs">{UI_TEXT.version}</p>
-        </div>
-        <div className="flex items-center gap-2">
-          <div className={`w-2 h-2 rounded-full ${isReady ? 'bg-green-400 animate-pulse' : 'bg-yellow-400'}`} />
-          <p className="text-green-400 font-mono text-xs tracking-widest">
-            {isReady ? UI_TEXT.systemOnline : UI_TEXT.loadingModel}
+      {/* Top gradient only — bottom panel has its own background */}
+      <div className="absolute top-0 left-0 right-0 h-32 pointer-events-none"
+        style={{ background: 'linear-gradient(to bottom, rgba(0,0,0,0.7), transparent)' }} />
+
+      {/* Loading overlay */}
+      {!isReady && (
+        <div className="absolute inset-0 bg-black/90 flex flex-col items-center justify-center gap-5 z-20">
+          <p className="font-bold text-white text-2xl tracking-[6px] font-mono">VISIONX</p>
+          <div className="w-10 h-10 border-2 border-stone-700 border-t-cyan-400 rounded-full animate-spin" />
+          <p className="text-stone-400 text-sm" style={{ fontFamily: 'var(--font-khmer)' }}>
+            {UI_TEXT.loadingModel}
           </p>
         </div>
+      )}
+
+      {/* Top bar — floats over camera */}
+      <div
+        className="absolute top-0 left-0 right-0 z-10 flex justify-between items-center px-5 py-3"
+        style={{ paddingTop: 'max(0.75rem, env(safe-area-inset-top))' }}
+      >
+        <div>
+          <p className="font-bold text-white text-lg tracking-[4px] font-mono">VISIONX</p>
+          <p className="text-white/40 text-base font-mono tracking-widest">{UI_TEXT.version} · {UI_TEXT.subtitle}</p>
+        </div>
       </div>
 
-      <div className="relative w-full max-w-2xl">
-        <div className="absolute top-0 left-0 w-6 h-6 border-t-2 border-l-2 border-green-400 z-10" />
-        <div className="absolute top-0 right-0 w-6 h-6 border-t-2 border-r-2 border-green-400 z-10" />
-        <div className="absolute bottom-0 left-0 w-6 h-6 border-b-2 border-l-2 border-green-400 z-10" />
-        <div className="absolute bottom-0 right-0 w-6 h-6 border-b-2 border-r-2 border-green-400 z-10" />
+      {/* Bottom panel — floats over camera */}
+      <div
+        className="absolute bottom-0 left-0 right-0 z-10 px-5 pt-3"
+        style={{
+          paddingBottom: 'max(1rem, env(safe-area-inset-bottom))',
+          background: 'linear-gradient(to top, rgba(0,0,0,0.8) 70%, transparent)',
+        }}
+      >
+        <div className="flex items-end justify-between gap-4">
 
-        <video
-          ref={videoRef}
-          autoPlay
-          playsInline
-          muted
-          className="w-full rounded-sm opacity-90"
-        />
-        <canvas
-          ref={canvasRef}
-          className="absolute inset-0 w-full h-full"
-        />
-      </div>
-
-      <div className="absolute bottom-0 left-0 right-0 px-6 py-6 z-10" style={{ paddingBottom: 'max(1.5rem, env(safe-area-inset-bottom))' }}>
-        <div className="flex justify-between items-end">
-          <div>
-            <p className="text-green-900 font-mono text-xs tracking-widest mb-1">{UI_TEXT.targetIdentified}</p>
-            <p className="text-green-400 text-3xl sm:text-5xl font-bold drop-shadow-lg"
-              style={{ fontFamily: "'Khmer OS', 'Noto Sans Khmer', sans-serif" }}>
+          {/* Label */}
+          <div className="flex-1 min-w-0">
+            <p className="text-white/40 text-base mb-1" style={{ fontFamily: 'var(--font-khmer)' }}>
+              {isDetecting ? UI_TEXT.targetIdentified : UI_TEXT.nothingDetected}
+            </p>
+            <p
+              className="font-bold truncate transition-all duration-300 pb-2"
+              style={{
+                fontFamily: 'var(--font-khmer)',
+                fontSize: 'clamp(1.75rem, 7vw, 2.75rem)',
+                color: isDetecting ? '#22d3ee' : 'rgba(255,255,255,0.25)',
+                textShadow: isDetecting ? '0 0 30px rgba(34,211,238,0.4)' : 'none',
+              }}
+            >
               {label}
             </p>
           </div>
-          <div className="text-right">
-            <p className="text-green-900 font-mono text-xs tracking-widest mb-1">{UI_TEXT.confidence}</p>
-            <p className="text-green-400 font-mono text-2xl sm:text-4xl font-bold">
-              {confidence > 0 ? `${confidence}%` : '--'}
+
+          {/* Confidence ring */}
+          <div
+            className="shrink-0 w-18 h-18 rounded-full flex flex-col items-center justify-center border-2 backdrop-blur-sm transition-all duration-500"
+            style={{
+              width: '72px',
+              height: '72px',
+              borderColor: isDetecting ? '#22d3ee' : 'rgba(255,255,255,0.15)',
+              background: isDetecting ? 'rgba(34,211,238,0.1)' : 'rgba(0,0,0,0.3)',
+              boxShadow: isDetecting ? '0 0 20px rgba(34,211,238,0.2)' : 'none'
+            }}
+          >
+            <p className="font-bold text-xl leading-none font-mono"
+              style={{ color: isDetecting ? '#22d3ee' : 'rgba(255,255,255,0.25)' }}>
+              {confidence > 0 ? confidence : '--'}
             </p>
+            {confidence > 0 && (
+              <p className="text-[9px] font-mono" style={{ color: '#22d3ee' }}>%</p>
+            )}
           </div>
+
         </div>
 
-        <div className="mt-3 h-1 bg-green-900 rounded-full overflow-hidden">
-          <div
-            className="h-full bg-green-400 transition-all duration-300"
-            style={{ width: `${confidence}%` }}
-          />
-        </div>
       </div>
+
     </div>
   )
 }

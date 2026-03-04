@@ -1,20 +1,37 @@
 import type { Metadata, Viewport } from "next";
-import { Geist, Geist_Mono } from "next/font/google";
+import { Geist_Mono, Noto_Sans_Khmer } from "next/font/google";
 import "./globals.css";
-
-const geistSans = Geist({
-  variable: "--font-geist-sans",
-  subsets: ["latin"],
-});
 
 const geistMono = Geist_Mono({
   variable: "--font-geist-mono",
   subsets: ["latin"],
 });
 
+const notoSansKhmer = Noto_Sans_Khmer({
+  variable: "--font-khmer",
+  subsets: ["khmer"],
+  weight: ["400", "700"],
+});
+
 export const metadata: Metadata = {
-  title: "VisionX",
-  description: "AI Object Detection",
+  title: "VisionX — AI Object Detection in Khmer",
+  description: "Real-time AI object detection app that identifies objects through your camera and speaks their names in Khmer (ភាសាខ្មែរ). Powered by TensorFlow.js and COCO-SSD. Free, no API key, runs entirely in your browser.",
+  keywords: ["AI object detection", "Khmer", "ភាសាខ្មែរ", "TensorFlow.js", "real-time", "camera", "COCO-SSD"],
+  authors: [{ name: "Oudom", url: "https://oudom.dev" }],
+  openGraph: {
+    title: "VisionX — AI Object Detection in Khmer",
+    description: "Point your camera at anything. VisionX identifies it and speaks its name in Khmer.",
+    url: "https://visionx.oudom.dev",
+    siteName: "VisionX",
+    type: "website",
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: "VisionX — AI Object Detection in Khmer",
+    description: "Point your camera at anything. VisionX identifies it and speaks its name in Khmer.",
+    creator: "@oudom",
+  },
+  metadataBase: new URL("https://visionx.oudom.dev"),
 };
 
 export const viewport: Viewport = {
@@ -29,9 +46,10 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en">
+    <html lang="km">
       <body
-        className={`${geistSans.variable} ${geistMono.variable} antialiased`}
+        className={`${geistMono.variable} ${notoSansKhmer.variable} antialiased`}
+        suppressHydrationWarning
       >
         {children}
       </body>
