@@ -47,6 +47,10 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="km">
+      <head>
+        <link rel="preconnect" href="https://storage.googleapis.com" />
+        <link rel="dns-prefetch" href="https://storage.googleapis.com" />
+      </head>
       <body
         className={`${geistMono.variable} ${notoSansKhmer.variable} antialiased`}
         suppressHydrationWarning

@@ -2,17 +2,17 @@
 
 import { useEffect, useRef, useState } from 'react'
 import * as cocoSsd from '@tensorflow-models/coco-ssd'
-import '@tensorflow/tfjs'
+import * as tf from '@tensorflow/tfjs'
 import { khmerLabels } from '@/constants/khmer-labels'
 
 const UI_TEXT = {
   initializing: 'កំពុងដំណើរការ...',
+  startingCamera: 'កំពុងបើកកាមេរ៉ា...',
   scanning: 'កំពុងស្កេន...',
-  systemOnline: 'ប្រព័ន្ធអនឡាញ',
   loadingModel: 'កំពុងទាញយកទិន្នន័យ...',
+  cameraError: 'មិនអាចប្រើកាមេរ៉ា',
   targetIdentified: 'សម្គាល់ឃើញ',
   nothingDetected: 'មិនមានវត្តមាន',
-  confidence: 'កម្រិតច្បាស់លាស់',
   version: 'v1.0',
   subtitle: 'ការសម្គាល់វត្ថុ',
 }
@@ -20,28 +20,59 @@ const UI_TEXT = {
 export default function VisionApp() {
   const videoRef = useRef<HTMLVideoElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
+  const streamRef = useRef<MediaStream | null>(null)
+  const modelRef = useRef<cocoSsd.ObjectDetection | null>(null)
+  const modelPromiseRef = useRef<Promise<cocoSsd.ObjectDetection> | null>(null)
+  const detectFrameRef = useRef<number | null>(null)
+  const khmerVoiceRef = useRef<SpeechSynthesisVoice | null>(null)
   const lastSpokenRef = useRef<string>('')
   const speechUnlockedRef = useRef(false)
-  const [label, setLabel] = useState(UI_TEXT.initializing)
+  const [label, setLabel] = useState(UI_TEXT.startingCamera)
   const [confidence, setConfidence] = useState(0)
   const [isReady, setIsReady] = useState(false)
+  const [isCameraReady, setIsCameraReady] = useState(false)
   const [isDetecting, setIsDetecting] = useState(false)
+  const [loadingText, setLoadingText] = useState(UI_TEXT.startingCamera)
 
-  async function startCamera() {
+  async function startCamera(): Promise<void> {
     const stream = await navigator.mediaDevices.getUserMedia({
       video: { facingMode: 'environment' }
     })
-    if (videoRef.current) {
-      videoRef.current.srcObject = stream
-      videoRef.current.onloadeddata = () => loadModelAndDetect()
-    }
+    streamRef.current = stream
+    const video = videoRef.current
+    if (!video) return
+    video.srcObject = stream
+
+    await new Promise<void>((resolve) => {
+      video.onloadedmetadata = () => resolve()
+    })
+    await video.play().catch(() => undefined)
+    setIsCameraReady(true)
   }
 
-  async function loadModelAndDetect() {
-    const model = await cocoSsd.load()
-    setIsReady(true)
-    setLabel(UI_TEXT.scanning)
-    detectLoop(model)
+  function cacheKhmerVoice() {
+    const voices = window.speechSynthesis.getVoices()
+    khmerVoiceRef.current = voices.find(v => v.lang === 'km-KH' || v.lang.startsWith('km')) ?? null
+  }
+
+  async function loadModel(): Promise<cocoSsd.ObjectDetection> {
+    if (modelRef.current) return modelRef.current
+    if (modelPromiseRef.current) return modelPromiseRef.current
+
+    modelPromiseRef.current = (async () => {
+      await tf.ready()
+      const model = await cocoSsd.load({ base: 'lite_mobilenet_v2' })
+
+      // Warm up once to avoid the first detection hitch.
+      const warmup = tf.zeros([300, 300, 3], 'int32')
+      await model.detect(warmup as tf.Tensor3D, 1, 0.5)
+      warmup.dispose()
+
+      modelRef.current = model
+      return model
+    })()
+
+    return modelPromiseRef.current
   }
 
   function unlockSpeech() {
@@ -56,11 +87,8 @@ export default function VisionApp() {
     if (text === lastSpokenRef.current) return
     lastSpokenRef.current = text
 
-    const voices = window.speechSynthesis.getVoices()
-    const khmerVoice = voices.find(v => v.lang === 'km-KH' || v.lang.startsWith('km'))
-
     const utterance = new SpeechSynthesisUtterance(text)
-    if (khmerVoice) utterance.voice = khmerVoice
+    if (khmerVoiceRef.current) utterance.voice = khmerVoiceRef.current
     utterance.lang = 'km-KH'
     utterance.rate = 0.9
     utterance.pitch = 1.0
@@ -87,7 +115,7 @@ export default function VisionApp() {
     const offsetX = (displayW - video.videoWidth * scale) / 2
     const offsetY = (displayH - video.videoHeight * scale) / 2
 
-    const predictions = await model.detect(video)
+    const predictions = await model.detect(video, 8, 0.45)
     ctx.clearRect(0, 0, displayW, displayH)
 
     if (predictions.length > 0) {
@@ -161,12 +189,53 @@ export default function VisionApp() {
       setConfidence(0)
     }
 
-    requestAnimationFrame(() => detectLoop(model))
+    detectFrameRef.current = requestAnimationFrame(() => {
+      void detectLoop(model)
+    })
   }
 
   useEffect(() => {
-    startCamera()
-  }, [])
+    let disposed = false
+
+    cacheKhmerVoice()
+    window.speechSynthesis.onvoiceschanged = cacheKhmerVoice
+
+    const initialize = async () => {
+      try {
+        setLoadingText(UI_TEXT.startingCamera)
+        const cameraPromise = startCamera()
+        const modelPromise = loadModel()
+        await cameraPromise
+        if (!disposed) {
+          setLoadingText(UI_TEXT.loadingModel)
+        }
+        const model = await modelPromise
+        if (disposed) return
+        setIsReady(true)
+        setLabel(UI_TEXT.scanning)
+        void detectLoop(model)
+      } catch {
+        if (disposed) return
+        setLabel(UI_TEXT.cameraError)
+        setLoadingText(UI_TEXT.cameraError)
+      }
+    }
+
+    void initialize()
+
+    return () => {
+      disposed = true
+      if (detectFrameRef.current !== null) {
+        cancelAnimationFrame(detectFrameRef.current)
+      }
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach(track => track.stop())
+      }
+      window.speechSynthesis.cancel()
+      window.speechSynthesis.onvoiceschanged = null
+    }
+  // detectLoop intentionally uses refs/state setters and is started once on mount.
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <div className="relative min-h-dvh overflow-hidden overscroll-none bg-black" onClick={unlockSpeech}>
@@ -188,14 +257,26 @@ export default function VisionApp() {
       <div className="absolute top-0 left-0 right-0 h-32 pointer-events-none"
         style={{ background: 'linear-gradient(to bottom, rgba(0,0,0,0.7), transparent)' }} />
 
-      {/* Loading overlay */}
-      {!isReady && (
+      {/* Full loader only before camera is visible */}
+      {!isCameraReady && (
         <div className="absolute inset-0 bg-black/90 flex flex-col items-center justify-center gap-5 z-20">
           <p className="font-bold text-white text-2xl tracking-[6px] font-mono">VISIONKH</p>
           <div className="w-10 h-10 border-2 border-stone-700 border-t-cyan-400 rounded-full animate-spin" />
           <p className="text-stone-400 text-sm" style={{ fontFamily: 'var(--font-khmer)' }}>
-            {UI_TEXT.loadingModel}
+            {loadingText}
           </p>
+        </div>
+      )}
+
+      {/* Progressive status while AI model finishes loading */}
+      {isCameraReady && !isReady && (
+        <div className="absolute top-16 left-1/2 -translate-x-1/2 z-20 pointer-events-none">
+          <div className="px-3 py-1.5 rounded-full border border-cyan-400/40 bg-black/45 backdrop-blur-sm flex items-center gap-2">
+            <div className="w-3 h-3 border-2 border-cyan-200/40 border-t-cyan-300 rounded-full animate-spin" />
+            <p className="text-cyan-100 text-xs tracking-wide" style={{ fontFamily: 'var(--font-khmer)' }}>
+              {loadingText}
+            </p>
+          </div>
         </div>
       )}
 
